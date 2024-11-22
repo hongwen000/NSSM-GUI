@@ -188,9 +188,70 @@ if not os.path.exists(NSSM_EXE_PATH):
 
 
 def is_admin():
+    """
+    Checks if the current user has administrative privileges.
+    """
     try:
         return ctypes.windll.shell32.IsUserAnAdmin()
     except:
+        return False
+
+
+def run_as_admin():
+    """
+    Relaunches the current script with administrative privileges.
+    """
+    try:
+        # Get the absolute path of the current Python executable
+        python_exe = sys.executable
+        # Get the absolute path of the current script
+        script = os.path.abspath(sys.argv[0])
+        # Reconstruct the command-line arguments
+        params = ' '.join([f'"{arg}"' for arg in sys.argv[1:]])
+
+        # Initialize the SHELLEXECUTEINFO structure
+        SEE_MASK_DEFAULT = 0x00000000
+        SW_SHOW = 5
+        class SHELLEXECUTEINFO(ctypes.Structure):
+            _fields_ = [
+                ("cbSize", ctypes.c_ulong),
+                ("fMask", ctypes.c_ulong),
+                ("hwnd", ctypes.c_void_p),
+                ("lpVerb", ctypes.c_wchar_p),
+                ("lpFile", ctypes.c_wchar_p),
+                ("lpParameters", ctypes.c_wchar_p),
+                ("lpDirectory", ctypes.c_wchar_p),
+                ("nShow", ctypes.c_int),
+                ("hInstApp", ctypes.c_void_p),
+                ("lpIDList", ctypes.c_void_p),
+                ("lpClass", ctypes.c_wchar_p),
+                ("hkeyClass", ctypes.c_void_p),
+                ("dwHotKey", ctypes.c_ulong),
+                ("hIconOrMonitor", ctypes.c_void_p),
+                ("hProcess", ctypes.c_void_p)
+            ]
+
+        sei = SHELLEXECUTEINFO()
+        sei.cbSize = ctypes.sizeof(SHELLEXECUTEINFO)
+        sei.fMask = SEE_MASK_DEFAULT
+        sei.hwnd = None
+        sei.lpVerb = "runas"  # Causes UAC elevation prompt
+        sei.lpFile = python_exe
+        sei.lpParameters = f'"{script}" {params}'
+        sei.lpDirectory = None
+        sei.nShow = SW_SHOW
+        sei.hInstApp = None
+
+        # Execute the ShellExecuteEx function
+        if not ctypes.windll.shell32.ShellExecuteExW(ctypes.byref(sei)):
+            error = ctypes.GetLastError()
+            QtWidgets.QMessageBox.critical(None, 'Elevation Error',
+                                           f"Failed to elevate privileges. Error code: {error}")
+            return False
+        return True
+    except Exception as e:
+        QtWidgets.QMessageBox.critical(None, 'Elevation Error',
+                                       f"Failed to elevate privileges:\n{str(e)}")
         return False
 
 
@@ -1259,6 +1320,26 @@ class AddServiceDialog(QtWidgets.QDialog):
 
 
 def main():
+    """
+    Entry point for the NSSM-GUI application.
+    """
+    # Initialize a temporary QApplication to display message boxes if needed
+    temp_app = QtWidgets.QApplication(sys.argv)
+
+    # Check for administrative privileges
+    if not is_admin():
+        # Attempt to relaunch the application with admin rights
+        success = run_as_admin()
+        if success:
+            # Successfully initiated elevation; exit the current instance
+            sys.exit(0)
+        else:
+            # Elevation failed or was canceled; inform the user and exit
+            QtWidgets.QMessageBox.critical(None, 'Permission Denied',
+                                           'This application requires administrative privileges to manage services.')
+            sys.exit(1)
+
+    # Initialize the main QApplication
     app = QtWidgets.QApplication(sys.argv)
     gui = NSSMGUI()
     gui.show()
