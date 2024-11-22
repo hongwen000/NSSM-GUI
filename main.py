@@ -13,14 +13,15 @@ logging.basicConfig(filename='nssm_gui.log', level=logging.ERROR)
 from pydantic import BaseModel, validator
 
 from pydantic import BaseModel, Field, field_validator, ValidationError
+from typing import Optional, List, Dict
 import os
 import re
 
 class ServiceConfig(BaseModel):
-    service_name: str = Field(..., min_length=1, max_length=256)
-    application_path: str
+    service_name: Optional[str] = Field('', min_length=1, max_length=256)
+    application_path: Optional[str] = ''
     arguments: str = ''
-    app_directory: str = ''
+    app_directory: Optional[str] = ''
     app_exit: str = 'Restart'
     display_name: str = ''
     description: str = ''
@@ -30,10 +31,13 @@ class ServiceConfig(BaseModel):
     dependencies: list[str] = []
     process_priority: str = 'NORMAL_PRIORITY_CLASS'
     stdout_path: str = ''
+    stderr_path: str = ''
     env_variables: dict[str, str] = {}
 
     @field_validator('service_name')
     def validate_service_name(cls, v):
+        if not v:
+            return v  # Allow empty string for default constructor
         # Service names must not contain illegal characters
         if not re.match(r'^[A-Za-z0-9_\-\.]+$', v):
             raise ValueError("Service name contains illegal characters.")
@@ -41,6 +45,8 @@ class ServiceConfig(BaseModel):
 
     @field_validator('application_path')
     def validate_application_path(cls, v):
+        if not v:
+            return v  # Allow empty string for default constructor
         if not os.path.isfile(v):
             raise ValueError(f"Application path '{v}' does not exist or is not a file.")
 
@@ -48,16 +54,28 @@ class ServiceConfig(BaseModel):
 
     @field_validator('app_directory')
     def validate_app_directory(cls, v):
-        if v and not os.path.isdir(v):
+        if not v:
+            return v  # Allow empty string
+        if not os.path.isdir(v):
             raise ValueError(f"App directory '{v}' does not exist or is not a directory.")
         return v
 
     @field_validator('stdout_path')
     def validate_stdout_path(cls, v):
-        if v:
-            directory = os.path.dirname(v)
-            if directory and not os.path.isdir(directory):
-                raise ValueError(f"The directory for stdout path '{v}' does not exist.")
+        if not v:
+            return v
+        directory = os.path.dirname(v)
+        if directory and not os.path.isdir(directory):
+            raise ValueError(f"The directory for stdout path '{v}' does not exist.")
+        return v
+
+    @field_validator('stderr_path')
+    def validate_stderr_path(cls, v):
+        if not v:
+            return v
+        directory = os.path.dirname(v)
+        if directory and not os.path.isdir(directory):
+            raise ValueError(f"The directory for stdout path '{v}' does not exist.")
         return v
 
     @field_validator('start')
@@ -86,7 +104,7 @@ class ServiceConfig(BaseModel):
         valid_accounts = ['LocalSystem', 'LocalService', 'NetworkService']
         if v in valid_accounts:
             return v
-        # Optionally, validate domain accounts
+        # Validate domain accounts
         if '\\' in v:
             domain, user = v.split('\\', 1)
             if not domain or not user:
@@ -94,7 +112,6 @@ class ServiceConfig(BaseModel):
             return v
         else:
             raise ValueError(f"Invalid object name '{v}'. Use 'LocalSystem', 'LocalService', 'NetworkService', or 'DOMAIN\\UserName'.")
-        return v
 
     @field_validator('dependencies')
     def validate_dependencies(cls, v):
@@ -167,6 +184,8 @@ class NSSMGUI(QtWidgets.QMainWindow):
         self.service_table.setColumnCount(2)
         self.service_table.setHorizontalHeaderLabels(['Service Name', 'Status'])
         self.service_table.horizontalHeader().setStretchLastSection(True)
+        self.service_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.service_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.main_layout.addWidget(self.service_table)
 
         # Buttons
@@ -200,14 +219,23 @@ class NSSMGUI(QtWidgets.QMainWindow):
     def run_nssm_command(self, args):
         cmd = [NSSM_EXE_PATH] + args
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            if result.returncode != 0:
+            # Capture output as bytes
+            result = subprocess.run(cmd, capture_output=True, check=False)
+            # Determine the encoding used by nssm.exe
+            # Assuming UTF-8; adjust if nssm.exe uses a different encoding
+            encoding = 'utf-8'
+
+            # Decode stdout and stderr
+            stdout = result.stdout.decode(encoding, errors='replace')
+            stderr = result.stderr.decode(encoding, errors='replace')
+
+            if len(stderr):
                 # Handle error output
-                QtWidgets.QMessageBox.critical(self, 'NSSM Error', result.stderr)
-            return result.stdout
+                QtWidgets.QMessageBox.critical(self, 'NSSM Error', stderr)
+            return stdout
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, 'Error', f"Failed to run NSSM command: {str(e)}")
-            logging.error("Error in get_service_config", exc_info=True)
+            logging.error("Error in run_nssm_command", exc_info=True)
             return ''
 
 
@@ -215,29 +243,32 @@ class NSSMGUI(QtWidgets.QMainWindow):
         # Clear existing rows
         self.service_table.setRowCount(0)
         # Get the system encoding
-        sys_encoding = locale.getpreferredencoding()
-        # Get list of services using NSSM naming convention
-        output = subprocess.check_output(['sc', 'query', 'type=', 'service', 'state=', 'all'])
-        services = output.decode(encoding=sys_encoding)
-        service_names = []
-        for line in services.split('\n'):
-            if 'SERVICE_NAME:' in line:
-                name = line.strip().split(':')[1].strip()
-                if self.is_nssm_service(name):
-                    service_names.append(name)
-        # Populate the table
-        for service in service_names:
-            row_position = self.service_table.rowCount()
-            self.service_table.insertRow(row_position)
-            self.service_table.setItem(row_position, 0, QtWidgets.QTableWidgetItem(service))
-            status = self.get_service_status(service)
-            self.service_table.setItem(row_position, 1, QtWidgets.QTableWidgetItem(status))
+        try:
+            # Get list of services using NSSM naming convention
+            # Use the system's preferred encoding
+            sys_encoding = locale.getpreferredencoding()
+            output = subprocess.check_output(['sc', 'query', 'type=', 'service', 'state=', 'all'], text=True, encoding=sys_encoding)
+            service_names = []
+            for line in output.split('\n'):
+                if 'SERVICE_NAME:' in line:
+                    name = line.strip().split(':')[1].strip()
+                    if self.is_nssm_service(name):
+                        service_names.append(name)
+            # Populate the table
+            for service in service_names:
+                row_position = self.service_table.rowCount()
+                self.service_table.insertRow(row_position)
+                self.service_table.setItem(row_position, 0, QtWidgets.QTableWidgetItem(service))
+                status = self.get_service_status(service)
+                self.service_table.setItem(row_position, 1, QtWidgets.QTableWidgetItem(status))
+        except subprocess.CalledProcessError as e:
+            QtWidgets.QMessageBox.critical(self, 'Error', f"Failed to load services:\n{e.stderr}")
 
     def is_nssm_service(self, service_name):
         # Implement a method to check if a service is managed by NSSM
         try:
             output = subprocess.check_output(['sc', 'qc', service_name])
-            for line in output.decode(encoding='GBK').split('\n'):
+            for line in output.decode(encoding='utf-8', errors='replace').split('\n'):
                 if 'BINARY_PATH_NAME' in line and 'nssm.exe' in line.lower():
                     return True
         except subprocess.CalledProcessError:
@@ -246,13 +277,13 @@ class NSSMGUI(QtWidgets.QMainWindow):
 
     def get_service_status(self, service_name):
         output = subprocess.check_output(['sc', 'query', service_name])
-        for line in output.decode(encoding='GBK').split('\n'):
+        for line in output.decode(encoding='utf-8', errors='replace').split('\n'):
             if 'STATE' in line:
                 return line.strip().split(':')[1].split('  ')[1]
         return 'Unknown'
 
     def add_service(self):
-        dialog = AddServiceDialog(self)
+        dialog = AddServiceDialog(self, existing_config=ServiceConfig())
         if dialog.exec_():
             service_config = dialog.get_service_config()
             if service_config:
@@ -272,17 +303,26 @@ class NSSMGUI(QtWidgets.QMainWindow):
                     if updated_config:
                         self.configure_service(updated_config, edit=True)
                         self.load_services()
+            else:
+                QtWidgets.QMessageBox.warning(self, 'Error', f'Could not retrieve configuration for service {service_name}')
 
-    def configure_service(self, config: ServiceConfig, edit=False):
+    def configure_service(self, config: ServiceConfig, edit: bool = False):
         service_name = config.service_name
-        args = []
-        if edit:
-            args = ['edit', service_name]
-        else:
-            args = ['install', service_name, config.application_path]
+        if not service_name:
+            QtWidgets.QMessageBox.warning(self, 'Configuration Error', 'Service Name is required.')
+            return
+        if not config.application_path and not edit:
+            QtWidgets.QMessageBox.warning(self, 'Configuration Error', 'Executable Path is required.')
+            return
 
         # Build the command to set various configurations
         settings_commands = []
+        args = []
+        if edit:
+            if config.application_path:
+                settings_commands.append(['set', service_name, 'Application', config.application_path])
+        else:
+            args = ['install', service_name, config.application_path]
 
         if config.arguments:
             settings_commands.append(['set', service_name, 'AppParameters', config.arguments])
@@ -317,15 +357,21 @@ class NSSMGUI(QtWidgets.QMainWindow):
 
         if config.stdout_path:
             settings_commands.append(['set', service_name, 'AppStdout', config.stdout_path])
+        
+        if config.stderr_path:
+            settings_commands.append(['set', service_name, 'AppStderr', config.stderr_path])
 
         if config.env_variables:
             for key, value in config.env_variables.items():
                 settings_commands.append(['set', service_name, 'AppEnvironmentExtra', f'{key}={value}'])
 
         # Run the commands
-        self.run_nssm_command(args)
+        if len(args):
+            self.run_nssm_command(args)
         for cmd in settings_commands:
             self.run_nssm_command(cmd)
+
+        QtWidgets.QMessageBox.information(self, 'Success', f"Service '{service_name}' has been {'edited' if edit else 'added'} successfully.")
 
     def delete_service(self):
         current_row = self.service_table.currentRow()
@@ -336,51 +382,73 @@ class NSSMGUI(QtWidgets.QMainWindow):
                                                    QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
                                                    QtWidgets.QMessageBox.No)
             if reply == QtWidgets.QMessageBox.Yes:
-                self.run_nssm_command(['remove', service_name, 'confirm'])
-                self.load_services()
+                output = self.run_nssm_command(['remove', service_name, 'confirm'])
+                if output:
+                    QtWidgets.QMessageBox.information(self, 'Success', f"Service '{service_name}' has been deleted successfully.")
+                    self.load_services()
 
     def start_service(self):
         current_row = self.service_table.currentRow()
         if current_row >= 0:
             service_name = self.service_table.item(current_row, 0).text()
-            self.run_nssm_command(['start', service_name])
-            self.load_services()
+            output = self.run_nssm_command(['start', service_name])
+            if output:
+                QtWidgets.QMessageBox.information(self, 'Success', f"Service '{service_name}' started successfully.")
+                self.load_services()
 
     def stop_service(self):
         current_row = self.service_table.currentRow()
         if current_row >= 0:
             service_name = self.service_table.item(current_row, 0).text()
-            self.run_nssm_command(['stop', service_name])
-            self.load_services()
+            output = self.run_nssm_command(['stop', service_name])
+            if output:
+                QtWidgets.QMessageBox.information(self, 'Success', f"Service '{service_name}' stopped successfully.")
+                self.load_services()
 
     def enable_service(self):
         current_row = self.service_table.currentRow()
         if current_row >= 0:
             service_name = self.service_table.item(current_row, 0).text()
-            subprocess.run(['sc', 'config', service_name, 'start=', 'auto'])
-            self.load_services()
+            try:
+                subprocess.run(['sc', 'config', service_name, 'start=', 'auto'], check=True)
+                QtWidgets.QMessageBox.information(self, 'Success', f"Service '{service_name}' enabled successfully.")
+                self.load_services()
+            except subprocess.CalledProcessError as e:
+                QtWidgets.QMessageBox.critical(self, 'Error', f"Failed to enable service '{service_name}':\n{e}")
 
     def disable_service(self):
         current_row = self.service_table.currentRow()
         if current_row >= 0:
             service_name = self.service_table.item(current_row, 0).text()
-            subprocess.run(['sc', 'config', service_name, 'start=', 'disabled'])
-            self.load_services()
+            try:
+                subprocess.run(['sc', 'config', service_name, 'start=', 'disabled'], check=True)
+                QtWidgets.QMessageBox.information(self, 'Success', f"Service '{service_name}' disabled successfully.")
+                self.load_services()
+            except subprocess.CalledProcessError as e:
+                QtWidgets.QMessageBox.critical(self, 'Error', f"Failed to disable service '{service_name}':\n{e}")
 
-    def get_service_config(self, service_name) -> ServiceConfig:
+    def get_service_config(self, service_name: str) -> Optional[ServiceConfig]:
         # Use nssm dump to get the current configuration
         output = self.run_nssm_command(['dump', service_name])
+        if not output:
+            return None  # Error already shown
         config_data = self.parse_nssm_dump(output)
         if config_data:
-            return ServiceConfig(**config_data)
-        else:
-            return None
+            try:
+                return ServiceConfig(**config_data)
+            except ValidationError as e:
+                # Display validation errors to the user
+                error_messages = '\n'.join([f"{'.'.join(map(str, err['loc']))}: {err['msg']}" for err in e.errors()])
+                QtWidgets.QMessageBox.warning(self, 'Validation Error', f"Failed to parse service configuration:\n{error_messages}")
+        return None
 
     def parse_nssm_dump(self, dump_output: str) -> dict:
         import shlex  # Import shlex for proper command-line parsing
         config = {}
         lines = dump_output.strip().split('\n')
         for line in lines:
+            if not line.strip():
+                continue  # Skip empty lines
             # Use shlex with posix=False to handle Windows paths correctly
             lexer = shlex.shlex(line, posix=False)
             lexer.whitespace_split = True
@@ -426,6 +494,8 @@ class NSSMGUI(QtWidgets.QMainWindow):
                         config['process_priority'] = value.strip()
                     elif setting == 'AppStdout':
                         config['stdout_path'] = value.strip('"')
+                    elif setting == 'AppStderr':
+                        config['stderr_path'] = value.strip('"')
                     elif setting == 'AppEnvironmentExtra':
                         env_var = value.strip('"')
                         if '=' in env_var:
@@ -435,10 +505,10 @@ class NSSMGUI(QtWidgets.QMainWindow):
 
 
 class AddServiceDialog(QtWidgets.QDialog):
-    def __init__(self, parent=None, service_name=None, existing_config: ServiceConfig = None):
+    def __init__(self, parent=None, service_name: Optional[str] = None, existing_config: Optional[ServiceConfig] = None):
         super(AddServiceDialog, self).__init__(parent)
         self.setWindowTitle('Add Service' if not service_name else 'Edit Service')
-        self.setFixedSize(600, 500)
+        self.setFixedSize(600, 600)
         self.service_name = service_name
         self.existing_config = existing_config
         self.initUI()
@@ -499,6 +569,7 @@ class AddServiceDialog(QtWidgets.QDialog):
         self.app_tab.setLayout(layout)
 
         self.service_name_input = QtWidgets.QLineEdit()
+        self.service_name_input.setPlaceholderText('Required (Alphanumeric, _, -, .)')
         self.executable_path_input = QtWidgets.QLineEdit()
         self.service_name_input.setPlaceholderText('Required')
         self.executable_path_input.setPlaceholderText('Required')
@@ -510,8 +581,18 @@ class AddServiceDialog(QtWidgets.QDialog):
         exec_layout.addWidget(self.executable_path_input)
         exec_layout.addWidget(browse_button)
 
+        # App directory input
+        self.app_directory_input = QtWidgets.QLineEdit()
+        self.app_directory_input.setPlaceholderText('Optional')
+        browse_dir_button = QtWidgets.QPushButton('Browse')
+        browse_dir_button.clicked.connect(self.browse_app_directory)
+
+        app_dir_layout = QtWidgets.QHBoxLayout()
+        app_dir_layout.addWidget(self.app_directory_input)
+        app_dir_layout.addWidget(browse_dir_button)
         layout.addRow('Service Name (*):', self.service_name_input)
         layout.addRow('Executable Path (*):', exec_layout)
+        layout.addRow('Application Directory:', app_dir_layout)
         layout.addRow('Arguments:', self.arguments_input)
 
         if self.service_name:
@@ -523,9 +604,12 @@ class AddServiceDialog(QtWidgets.QDialog):
         self.details_tab.setLayout(layout)
 
         self.display_name_input = QtWidgets.QLineEdit()
+        self.display_name_input.setPlaceholderText('Optional')
         self.description_input = QtWidgets.QLineEdit()
+        self.description_input.setPlaceholderText('Optional')
         self.startup_type_combo = QtWidgets.QComboBox()
         self.startup_type_combo.addItems(['SERVICE_AUTO_START', 'SERVICE_DELAYED_AUTO_START', 'SERVICE_DEMAND_START', 'SERVICE_DISABLED'])
+        self.startup_type_combo.setToolTip('Select the startup type for the service.')
 
         layout.addRow('Display Name:', self.display_name_input)
         layout.addRow('Description:', self.description_input)
@@ -536,7 +620,8 @@ class AddServiceDialog(QtWidgets.QDialog):
         self.logon_tab.setLayout(layout)
 
         self.object_name_input = QtWidgets.QLineEdit()
-        self.object_name_input.setToolTip('Specify the account under which the service runs. Default is LocalSystem.')
+        self.object_name_input.setPlaceholderText('LocalSystem / LocalService / NetworkService or DOMAIN\\UserName')
+        self.object_name_input.setToolTip('Specify the account under which the service runs.')
 
         layout.addRow('Object Name:', self.object_name_input)
 
@@ -545,6 +630,7 @@ class AddServiceDialog(QtWidgets.QDialog):
         self.dependencies_tab.setLayout(layout)
 
         self.dependencies_input = QtWidgets.QPlainTextEdit()
+        self.dependencies_input.setPlaceholderText('Enter one service name per line.')
 
         layout.addRow('Dependencies (one per line):', self.dependencies_input)
 
@@ -561,6 +647,7 @@ class AddServiceDialog(QtWidgets.QDialog):
             'BELOW_NORMAL_PRIORITY_CLASS',
             'IDLE_PRIORITY_CLASS'
         ])
+        self.priority_combo.setToolTip('Set the priority class for the service process.')
 
         layout.addRow('Process Priority:', self.priority_combo)
 
@@ -576,13 +663,23 @@ class AddServiceDialog(QtWidgets.QDialog):
         stdout_layout.addWidget(self.stdout_path_input)
         stdout_layout.addWidget(stdout_browse_button)
 
+        self.stderr_path_input = QtWidgets.QLineEdit()
+        stderr_browse_button = QtWidgets.QPushButton('Browse')
+        stderr_browse_button.clicked.connect(self.browse_stderr)
+        
+        stderr_layout = QtWidgets.QHBoxLayout()
+        stderr_layout.addWidget(self.stderr_path_input)
+        stderr_layout.addWidget(stderr_browse_button)
+
         layout.addRow('Redirect stdout to file:', stdout_layout)
+        layout.addRow('Redirect stderr to file:', stderr_layout)
 
     def init_env_tab(self):
         layout = QtWidgets.QFormLayout()
         self.env_tab.setLayout(layout)
 
         self.env_input = QtWidgets.QPlainTextEdit()
+        self.env_input.setPlaceholderText('KEY=VALUE pairs, one per line.')
 
         layout.addRow('Environment Variables (KEY=VALUE):', self.env_input)
 
@@ -595,10 +692,22 @@ class AddServiceDialog(QtWidgets.QDialog):
         path, _ = QtWidgets.QFileDialog.getSaveFileName(self, 'Select Output File')
         if path:
             self.stdout_path_input.setText(path)
+    
+    def browse_stderr(self):
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, 'Select Error File')
+        if path:
+            self.stderr_path_input.setText(path)
+
+    def browse_app_directory(self):
+        directory = QtWidgets.QFileDialog.getExistingDirectory(self, 'Select Application Directory')
+        if directory:
+            self.app_directory_input.setText(directory)
+
 
     def load_service_config(self, config: ServiceConfig):
         self.service_name_input.setText(config.service_name)
         self.executable_path_input.setText(config.application_path)
+        self.app_directory_input.setText(config.app_directory)
         self.arguments_input.setText(config.arguments)
         self.display_name_input.setText(config.display_name)
         self.description_input.setText(config.description)
@@ -607,23 +716,25 @@ class AddServiceDialog(QtWidgets.QDialog):
         self.dependencies_input.setPlainText('\n'.join(config.dependencies))
         self.priority_combo.setCurrentText(config.process_priority)
         self.stdout_path_input.setText(config.stdout_path)
+        self.stderr_path_input.setText(config.stderr_path)
         env_text = '\n'.join([f'{k}={v}' for k, v in config.env_variables.items()])
         self.env_input.setPlainText(env_text)
 
-    def get_service_config(self) -> ServiceConfig:
+    def get_service_config(self) -> Optional[ServiceConfig]:
         config = {}
-        config['service_name'] = self.service_name_input.text()
-        config['application_path'] = self.executable_path_input.text()
-        config['arguments'] = self.arguments_input.text()
-        config['display_name'] = self.display_name_input.text()
-        config['description'] = self.description_input.text()
+        config['service_name'] = self.service_name_input.text().strip()
+        config['application_path'] = self.executable_path_input.text().strip()
+        config['app_directory'] = self.app_directory_input.text().strip()
+        config['arguments'] = self.arguments_input.text().strip()
+        config['display_name'] = self.display_name_input.text().strip()
+        config['description'] = self.description_input.text().strip()
         config['start'] = self.startup_type_combo.currentText()
-        config['object_name'] = self.object_name_input.text()
+        config['object_name'] = self.object_name_input.text().strip()
         dependencies = self.dependencies_input.toPlainText()
         if dependencies:
-            config['dependencies'] = dependencies.strip().split('\n')
+            config['dependencies'] = [dep.strip() for dep in dependencies.strip().split('\n') if dep.strip()]
         config['process_priority'] = self.priority_combo.currentText()
-        config['stdout_path'] = self.stdout_path_input.text()
+        config['stdout_path'] = self.stdout_path_input.text().strip()
         env_vars = self.env_input.toPlainText()
         if env_vars:
             env_dict = {}
@@ -632,12 +743,26 @@ class AddServiceDialog(QtWidgets.QDialog):
                     key, value = line.split('=', 1)
                     env_dict[key.strip()] = value.strip()
             config['env_variables'] = env_dict
+
         try:
             service_config = ServiceConfig(**config)
+            # Additional checks for required fields when adding a new service
+            if not self.existing_config:
+                missing_fields = []
+                if not service_config.service_name:
+                    missing_fields.append('Service Name')
+                if not service_config.application_path:
+                    missing_fields.append('Executable Path')
+                if missing_fields:
+                    raise ValidationError([{
+                        'loc': (field,),
+                        'msg': 'This field is required.',
+                        'type': 'value_error'
+                    } for field in missing_fields], model=ServiceConfig)
             return service_config
         except ValidationError as e:
             # Display validation errors to the user
-            error_messages = '\n'.join([f"{err['loc'][0]}: {err['msg']}" for err in e.errors()])
+            error_messages = '\n'.join([f"{'.'.join(map(str, err['loc']))}: {err['msg']}" for err in e.errors()])
             QtWidgets.QMessageBox.warning(self, 'Validation Error', error_messages)
             return None
         except Exception as e:
