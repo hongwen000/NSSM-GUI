@@ -8,14 +8,18 @@ from PyQt5 import QtWidgets, QtGui, QtCore
 import locale
 import logging
 
-# Configure logging
-logging.basicConfig(filename='nssm_gui.log', level=logging.ERROR)
 from pydantic import BaseModel, validator
 
 from pydantic import BaseModel, Field, field_validator, ValidationError
 from typing import Optional, List, Dict
 import os
 import re
+import ctypes
+
+# Configure logging
+logging.basicConfig(filename='nssm_gui.log', level=logging.ERROR,
+                    format='%(asctime)s:%(levelname)s:%(message)s')
+
 
 class ServiceConfig(BaseModel):
     service_name: Optional[str] = Field('', min_length=1, max_length=256)
@@ -28,12 +32,32 @@ class ServiceConfig(BaseModel):
     object_name: str = 'LocalSystem'
     start: str = 'SERVICE_AUTO_START'
     type: str = 'SERVICE_WIN32_OWN_PROCESS'
-    dependencies: list[str] = []
+    dependencies: List[str] = []
     process_priority: str = 'NORMAL_PRIORITY_CLASS'
-    stdout_path: str = ''
-    stderr_path: str = ''
-    env_variables: dict[str, str] = {}
-
+    stdout_path: Optional[str] = ''
+    stderr_path: Optional[str] = ''
+    env_variables: Dict[str, str] = {}
+    
+    # Shutdown configurations
+    kill_console_delay: int = 0
+    kill_window_delay: int = 0
+    kill_threads_delay: int = 0
+    kill_process_tree: bool = False
+    
+    # Exit configurations
+    throttle_delay: int = 0
+    restart_delay: int = 0
+    
+    # Rotation configurations
+    rotate_files: bool = False
+    rotate_online: bool = False
+    rotate_seconds: int = 0
+    rotate_bytes_low: int = 0
+    
+    # Hooks configurations
+    hook_share_output_handles: bool = False
+    hooks: Dict[str, str] = {}
+    
     @field_validator('service_name')
     def validate_service_name(cls, v):
         if not v:
@@ -75,7 +99,7 @@ class ServiceConfig(BaseModel):
             return v
         directory = os.path.dirname(v)
         if directory and not os.path.isdir(directory):
-            raise ValueError(f"The directory for stdout path '{v}' does not exist.")
+            raise ValueError(f"The directory for stderr path '{v}' does not exist.")
         return v
 
     @field_validator('start')
@@ -162,11 +186,19 @@ def download_nssm():
 if not os.path.exists(NSSM_EXE_PATH):
     download_nssm()
 
+
+def is_admin():
+    try:
+        return ctypes.windll.shell32.IsUserAnAdmin()
+    except:
+        return False
+
+
 class NSSMGUI(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle('NSSM-GUI')
-        self.setGeometry(100, 100, 900, 700)
+        self.setGeometry(100, 100, 1000, 800)
         self.initUI()
         self.load_services()
 
@@ -216,6 +248,7 @@ class NSSMGUI(QtWidgets.QMainWindow):
         self.stop_button.clicked.connect(self.stop_service)
         self.enable_button.clicked.connect(self.enable_service)
         self.disable_button.clicked.connect(self.disable_service)
+
     def run_nssm_command(self, args):
         cmd = [NSSM_EXE_PATH] + args
         try:
@@ -229,7 +262,7 @@ class NSSMGUI(QtWidgets.QMainWindow):
             stdout = result.stdout.decode(encoding, errors='replace')
             stderr = result.stderr.decode(encoding, errors='replace')
 
-            if len(stderr):
+            if stderr:
                 # Handle error output
                 QtWidgets.QMessageBox.critical(self, 'NSSM Error', stderr)
             return stdout
@@ -301,12 +334,100 @@ class NSSMGUI(QtWidgets.QMainWindow):
                 if dialog.exec_():
                     updated_config = dialog.get_service_config()
                     if updated_config:
-                        self.configure_service(updated_config, edit=True)
+                        self.configure_service(updated_config, edit=True, old_config=service_config)
                         self.load_services()
             else:
                 QtWidgets.QMessageBox.warning(self, 'Error', f'Could not retrieve configuration for service {service_name}')
 
-    def configure_service(self, config: ServiceConfig, edit: bool = False):
+    # def configure_service(self, config: ServiceConfig, edit: bool = False, current_config: Optional[ServiceConfig] = None):
+    #     service_name = config.service_name
+    #     if not service_name:
+    #         QtWidgets.QMessageBox.warning(self, 'Configuration Error', 'Service Name is required.')
+    #         return
+    #     if not config.application_path and not edit:
+    #         QtWidgets.QMessageBox.warning(self, 'Configuration Error', 'Executable Path is required.')
+    #         return
+
+    #     # Build the command to set various configurations
+    #     settings_commands = []
+    #     args = []
+    #     if edit:
+    #         if config.application_path:
+    #             settings_commands.append(['set', service_name, 'Application', config.application_path])
+    #     else:
+    #         args = ['install', service_name, config.application_path]
+
+    #     if config.arguments:
+    #         settings_commands.append(['set', service_name, 'AppParameters', config.arguments])
+
+    #     if config.app_directory:
+    #         settings_commands.append(['set', service_name, 'AppDirectory', config.app_directory])
+
+    #     if config.app_exit:
+    #         settings_commands.append(['set', service_name, 'AppExit', 'Default', config.app_exit])
+
+    #     if config.display_name:
+    #         settings_commands.append(['set', service_name, 'DisplayName', config.display_name])
+
+    #     if config.description:
+    #         settings_commands.append(['set', service_name, 'Description', config.description])
+
+    #     if config.object_name:
+    #         settings_commands.append(['set', service_name, 'ObjectName', config.object_name])
+
+    #     if config.start:
+    #         settings_commands.append(['set', service_name, 'Start', config.start])
+
+    #     if config.type:
+    #         settings_commands.append(['set', service_name, 'Type', config.type])
+
+    #     if config.dependencies:
+    #         for dep in config.dependencies:
+    #             settings_commands.append(['set', service_name, 'DependOnService', '+', dep])
+
+    #     if config.process_priority:
+    #         settings_commands.append(['set', service_name, 'AppPriority', config.process_priority])
+
+    #     if config.stdout_path:
+    #         settings_commands.append(['set', service_name, 'AppStdout', config.stdout_path])
+        
+    #     if config.stderr_path:
+    #         settings_commands.append(['set', service_name, 'AppStderr', config.stderr_path])
+
+    #     if config.env_variables:
+    #         for key, value in config.env_variables.items():
+    #             settings_commands.append(['set', service_name, 'AppEnvironmentExtra', f'{key}={value}'])
+
+    #     # Shutdown configurations
+    #     settings_commands.append(['set', service_name, 'KillConsoleDelay', str(config.kill_console_delay)])
+    #     settings_commands.append(['set', service_name, 'KillWindowDelay', str(config.kill_window_delay)])
+    #     settings_commands.append(['set', service_name, 'KillThreadsDelay', str(config.kill_threads_delay)])
+    #     settings_commands.append(['set', service_name, 'KillProcessTree', '1' if config.kill_process_tree else '0'])
+
+    #     # Exit configurations
+    #     settings_commands.append(['set', service_name, 'ThrottleDelay', str(config.throttle_delay)])
+    #     settings_commands.append(['set', service_name, 'RestartDelay', str(config.restart_delay)])
+
+    #     # Rotation configurations
+    #     settings_commands.append(['set', service_name, 'RotateFiles', '1' if config.rotate_files else '0'])
+    #     settings_commands.append(['set', service_name, 'RotateOnline', '1' if config.rotate_online else '0'])
+    #     settings_commands.append(['set', service_name, 'RotateSeconds', str(config.rotate_seconds)])
+    #     settings_commands.append(['set', service_name, 'RotateBytesLow', str(config.rotate_bytes_low)])
+
+    #     # Hooks configurations
+    #     settings_commands.append(['set', service_name, 'HookShareOutputHandles', '1' if config.hook_share_output_handles else '0'])
+    #     for event, action in config.hooks.items():
+    #         settings_commands.append(['set', service_name, f'Hook_{event}', action])
+
+    #     # Run the commands
+    #     if len(args):
+    #         self.run_nssm_command(args)
+    #     for cmd in settings_commands:
+    #         self.run_nssm_command(cmd)
+
+    #     QtWidgets.QMessageBox.information(self, 'Success', f"Service '{service_name}' has been {'edited' if edit else 'added'} successfully.")
+
+    def configure_service(self, config: ServiceConfig, edit: bool = False, old_config: Optional[ServiceConfig] = None):
         service_name = config.service_name
         if not service_name:
             QtWidgets.QMessageBox.warning(self, 'Configuration Error', 'Service Name is required.')
@@ -315,70 +436,115 @@ class NSSMGUI(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, 'Configuration Error', 'Executable Path is required.')
             return
 
-        # Build the command to set various configurations
+        # Determine the default config
+        default_config = ServiceConfig()
+
+        # Convert configs to dictionaries for easy comparison
+        config_dict = config.model_dump()
+        default_config_dict = default_config.model_dump()
+        old_config_dict = old_config.model_dump() if old_config else {}
+
         settings_commands = []
-        args = []
+
+        # Iterate through each field in ServiceConfig
+        for field, new_value in config_dict.items():
+            # Skip service_name as it's used for identification
+            if field == 'service_name':
+                continue
+
+            # Determine if the field exists in old_config
+            if old_config and field in old_config_dict:
+                old_value = old_config_dict[field]
+                if new_value != old_value:
+                    # Field exists in old_config and has changed
+                    settings_commands.append(self.build_set_command(service_name, field, new_value))
+            else:
+                # Field does not exist in old_config
+                default_value = default_config_dict.get(field)
+                if new_value != default_value:
+                    # Field is different from default
+                    settings_commands.append(self.build_set_command(service_name, field, new_value))
+
+        # Build the command to install or edit the service
         if edit:
-            if config.application_path:
-                settings_commands.append(['set', service_name, 'Application', config.application_path])
+            # if config.application_path:
+            #     settings_commands.append(['set', service_name, 'Application', config.application_path])
+            pass
         else:
             args = ['install', service_name, config.application_path]
-
-        if config.arguments:
-            settings_commands.append(['set', service_name, 'AppParameters', config.arguments])
-
-        if config.app_directory:
-            settings_commands.append(['set', service_name, 'AppDirectory', config.app_directory])
-
-        if config.app_exit:
-            settings_commands.append(['set', service_name, 'AppExit', 'Default', config.app_exit])
-
-        if config.display_name:
-            settings_commands.append(['set', service_name, 'DisplayName', config.display_name])
-
-        if config.description:
-            settings_commands.append(['set', service_name, 'Description', config.description])
-
-        if config.object_name:
-            settings_commands.append(['set', service_name, 'ObjectName', config.object_name])
-
-        if config.start:
-            settings_commands.append(['set', service_name, 'Start', config.start])
-
-        if config.type:
-            settings_commands.append(['set', service_name, 'Type', config.type])
-
-        if config.dependencies:
-            for dep in config.dependencies:
-                settings_commands.append(['set', service_name, 'DependOnService', '+', dep])
-
-        if config.process_priority:
-            settings_commands.append(['set', service_name, 'AppPriority', config.process_priority])
-
-        if config.stdout_path:
-            settings_commands.append(['set', service_name, 'AppStdout', config.stdout_path])
-        
-        if config.stderr_path:
-            settings_commands.append(['set', service_name, 'AppStderr', config.stderr_path])
-
-        if config.env_variables:
-            for key, value in config.env_variables.items():
-                settings_commands.append(['set', service_name, 'AppEnvironmentExtra', f'{key}={value}'])
-
-        # Run the commands
-        if len(args):
             self.run_nssm_command(args)
+
+        # Run the settings commands
         for cmd in settings_commands:
             self.run_nssm_command(cmd)
 
-        QtWidgets.QMessageBox.information(self, 'Success', f"Service '{service_name}' has been {'edited' if edit else 'added'} successfully.")
+        if not edit or (edit and settings_commands):
+            QtWidgets.QMessageBox.information(self, 'Success', f"Service '{service_name}' has been {'edited' if edit else 'added'} successfully.")
+        else:
+            QtWidgets.QMessageBox.information(self, 'Success', f"No changes for service '{service_name}'.")
+
+    def build_set_command(self, service_name: str, field: str, value):
+        """
+        Helper method to build NSSM set commands based on the field type.
+        """
+        # Mapping fields to NSSM parameters
+        field_mapping = {
+            'arguments': ['set', service_name, 'AppParameters', value],
+            'app_directory': ['set', service_name, 'AppDirectory', value],
+            'app_exit': ['set', service_name, 'AppExit', 'Default', value],
+            'display_name': ['set', service_name, 'DisplayName', value],
+            'description': ['set', service_name, 'Description', value],
+            'object_name': ['set', service_name, 'ObjectName', value],
+            'start': ['set', service_name, 'Start', value],
+            'type': ['set', service_name, 'Type', value],
+            'process_priority': ['set', service_name, 'AppPriority', value],
+            'stdout_path': ['set', service_name, 'AppStdout', value],
+            'stderr_path': ['set', service_name, 'AppStderr', value],
+            'kill_console_delay': ['set', service_name, 'KillConsoleDelay', str(value)],
+            'kill_window_delay': ['set', service_name, 'KillWindowDelay', str(value)],
+            'kill_threads_delay': ['set', service_name, 'KillThreadsDelay', str(value)],
+            'kill_process_tree': ['set', service_name, 'KillProcessTree', '1' if value else '0'],
+            'throttle_delay': ['set', service_name, 'ThrottleDelay', str(value)],
+            'restart_delay': ['set', service_name, 'RestartDelay', str(value)],
+            'rotate_files': ['set', service_name, 'RotateFiles', '1' if value else '0'],
+            'rotate_online': ['set', service_name, 'RotateOnline', '1' if value else '0'],
+            'rotate_seconds': ['set', service_name, 'RotateSeconds', str(value)],
+            'rotate_bytes_low': ['set', service_name, 'RotateBytesLow', str(value)],
+            'hook_share_output_handles': ['set', service_name, 'HookShareOutputHandles', '1' if value else '0'],
+        }
+
+        if field in field_mapping:
+            return field_mapping[field]
+        elif field == 'dependencies':
+            # Handle dependencies separately as they are a list
+            commands = []
+            for dep in value:
+                commands.append(['set', service_name, 'DependOnService', '+', dep])
+            return commands  # This will be a list of lists
+        elif field == 'env_variables':
+            # Handle environment variables separately as they are a dict
+            commands = []
+            for key, val in value.items():
+                commands.append(['set', service_name, 'AppEnvironmentExtra', f'{key}={val}'])
+            return commands  # This will be a list of lists
+        elif field == 'hooks':
+            # Handle hooks separately as they are a dict
+            commands = []
+            for event, action in value.items():
+                commands.append(['set', service_name, f'Hook_{event}', action])
+            return commands  # This will be a list of lists
+        else:
+            # For any other fields, attempt a generic set
+            return ['set', service_name, field, str(value)]
+
+    
 
     def delete_service(self):
         current_row = self.service_table.currentRow()
         if current_row >= 0:
             service_name = self.service_table.item(current_row, 0).text()
             reply = QtWidgets.QMessageBox.question(self, 'Confirm Delete',
-                                                   f'Are you sure you want to delete {service_name}?',
+                                                   f'Are you sure you want to delete the service "{service_name}"?',
                                                    QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
                                                    QtWidgets.QMessageBox.No)
             if reply == QtWidgets.QMessageBox.Yes:
@@ -453,7 +619,12 @@ class NSSMGUI(QtWidgets.QMainWindow):
             lexer = shlex.shlex(line, posix=False)
             lexer.whitespace_split = True
             lexer.commenters = ''
-            parts = list(lexer)
+            try:
+                parts = list(lexer)
+            except ValueError as e:
+                QtWidgets.QMessageBox.warning(self, 'Parsing Error', f"Failed to parse line:\n{line}\nError: {str(e)}")
+                continue
+
             # Ensure we have at least 4 parts: nssm.exe, command, service_name, setting/value
             if len(parts) >= 4:
                 # The command is the second part
@@ -476,7 +647,7 @@ class NSSMGUI(QtWidgets.QMainWindow):
                     elif setting == 'AppDirectory':
                         config['app_directory'] = value.strip('"')
                     elif setting == 'AppExit':
-                        config['app_exit'] = value.strip('"')
+                        config['app_exit'] = value.strip('"').lstrip('Default ')
                     elif setting == 'DisplayName':
                         config['display_name'] = value.strip('"')
                     elif setting == 'Description':
@@ -501,6 +672,55 @@ class NSSMGUI(QtWidgets.QMainWindow):
                         if '=' in env_var:
                             key, val = env_var.split('=', 1)
                             config.setdefault('env_variables', {})[key] = val
+                    # Shutdown settings
+                    elif setting == 'KillConsoleDelay':
+                        try:
+                            config['kill_console_delay'] = int(value)
+                        except ValueError:
+                            pass
+                    elif setting == 'KillWindowDelay':
+                        try:
+                            config['kill_window_delay'] = int(value)
+                        except ValueError:
+                            pass
+                    elif setting == 'KillThreadsDelay':
+                        try:
+                            config['kill_threads_delay'] = int(value)
+                        except ValueError:
+                            pass
+                    elif setting == 'KillProcessTree':
+                        config['kill_process_tree'] = value.strip() == '1'
+                    # Exit settings
+                    elif setting == 'ThrottleDelay':
+                        try:
+                            config['throttle_delay'] = int(value)
+                        except ValueError:
+                            pass
+                    elif setting == 'RestartDelay':
+                        try:
+                            config['restart_delay'] = int(value)
+                        except ValueError:
+                            pass
+                    # Rotation settings
+                    elif setting == 'RotateFiles':
+                        config['rotate_files'] = value.strip() == '1'
+                    elif setting == 'RotateOnline':
+                        config['rotate_online'] = value.strip() == '1'
+                    elif setting == 'RotateSeconds':
+                        try:
+                            config['rotate_seconds'] = int(value)
+                        except ValueError:
+                            pass
+                    elif setting == 'RotateBytesLow':
+                        try:
+                            config['rotate_bytes_low'] = int(value)
+                        except ValueError:
+                            pass
+                    # Hooks settings
+                    elif setting.startswith('Hook_'):
+                        hook_event = setting[len('Hook_'):].split('_')[0]
+                        hook_action = setting[len('Hook_'):].split('_')[1] if '_' in setting[len('Hook_'):] else ' '.join(setting[len('Hook_'):].split('_')[1:])
+                        config.setdefault('hooks', {})[hook_event] = value.strip('"')
         return config
 
 
@@ -508,7 +728,7 @@ class AddServiceDialog(QtWidgets.QDialog):
     def __init__(self, parent=None, service_name: Optional[str] = None, existing_config: Optional[ServiceConfig] = None):
         super(AddServiceDialog, self).__init__(parent)
         self.setWindowTitle('Add Service' if not service_name else 'Edit Service')
-        self.setFixedSize(600, 600)
+        self.setFixedSize(700, 800)
         self.service_name = service_name
         self.existing_config = existing_config
         self.initUI()
@@ -557,6 +777,26 @@ class AddServiceDialog(QtWidgets.QDialog):
         self.tabs.addTab(self.env_tab, 'Environment')
         self.init_env_tab()
 
+        # Shutdown Tab
+        self.shutdown_tab = QtWidgets.QWidget()
+        self.tabs.addTab(self.shutdown_tab, 'Shutdown')
+        self.init_shutdown_tab()
+
+        # Exit Tab
+        self.exit_tab = QtWidgets.QWidget()
+        self.tabs.addTab(self.exit_tab, 'Exit')
+        self.init_exit_tab()
+
+        # Rotation Tab
+        self.rotation_tab = QtWidgets.QWidget()
+        self.tabs.addTab(self.rotation_tab, 'Rotation')
+        self.init_rotation_tab()
+
+        # Hooks Tab
+        self.hooks_tab = QtWidgets.QWidget()
+        self.tabs.addTab(self.hooks_tab, 'Hooks')
+        self.init_hooks_tab()
+
         # Buttons
         self.button_box = QtWidgets.QDialogButtonBox()
         self.button_box.setStandardButtons(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
@@ -570,6 +810,7 @@ class AddServiceDialog(QtWidgets.QDialog):
 
         self.service_name_input = QtWidgets.QLineEdit()
         self.service_name_input.setPlaceholderText('Required (Alphanumeric, _, -, .)')
+        self.service_name_input.setToolTip('Enter a unique service name. Allowed characters: A-Z, a-z, 0-9, _, -, .')
         self.executable_path_input = QtWidgets.QLineEdit()
         self.service_name_input.setPlaceholderText('Required')
         self.executable_path_input.setPlaceholderText('Required')
@@ -683,11 +924,145 @@ class AddServiceDialog(QtWidgets.QDialog):
 
         layout.addRow('Environment Variables (KEY=VALUE):', self.env_input)
 
+    def init_shutdown_tab(self):
+        layout = QtWidgets.QFormLayout()
+        self.shutdown_tab.setLayout(layout)
+
+        # Shutdown methods checkboxes
+        self.method_console_checkbox = QtWidgets.QCheckBox('Kill Console')
+        self.method_console_checkbox.setChecked(True)
+        self.method_console_checkbox.stateChanged.connect(self.toggle_console_delay)
+
+        self.method_window_checkbox = QtWidgets.QCheckBox('Kill Window')
+        self.method_window_checkbox.setChecked(True)
+        self.method_window_checkbox.stateChanged.connect(self.toggle_window_delay)
+
+        self.method_threads_checkbox = QtWidgets.QCheckBox('Kill Threads')
+        self.method_threads_checkbox.setChecked(True)
+        self.method_threads_checkbox.stateChanged.connect(self.toggle_threads_delay)
+
+        self.method_terminate_checkbox = QtWidgets.QCheckBox('Terminate Process')
+        self.method_terminate_checkbox.setChecked(True)
+
+        # Delay inputs
+        self.console_delay_input = QtWidgets.QSpinBox()
+        self.console_delay_input.setRange(0, 600)
+        self.console_delay_input.setSuffix(' seconds')
+        self.console_delay_input.setValue(0)
+
+        self.window_delay_input = QtWidgets.QSpinBox()
+        self.window_delay_input.setRange(0, 600)
+        self.window_delay_input.setSuffix(' seconds')
+        self.window_delay_input.setValue(0)
+
+        self.threads_delay_input = QtWidgets.QSpinBox()
+        self.threads_delay_input.setRange(0, 600)
+        self.threads_delay_input.setSuffix(' seconds')
+        self.threads_delay_input.setValue(0)
+
+        self.kill_process_tree_checkbox = QtWidgets.QCheckBox('Kill Process Tree')
+        self.kill_process_tree_checkbox.setChecked(False)
+
+        # Layout arrangement
+        layout.addRow(self.method_console_checkbox, self.console_delay_input)
+        layout.addRow(self.method_window_checkbox, self.window_delay_input)
+        layout.addRow(self.method_threads_checkbox, self.threads_delay_input)
+        layout.addRow(self.method_terminate_checkbox, self.kill_process_tree_checkbox)
+
+    def init_exit_tab(self):
+        layout = QtWidgets.QFormLayout()
+        self.exit_tab.setLayout(layout)
+
+        self.throttle_delay_input = QtWidgets.QSpinBox()
+        self.throttle_delay_input.setRange(0, 3600)
+        self.throttle_delay_input.setSuffix(' seconds')
+        self.throttle_delay_input.setValue(0)
+
+        self.exit_action_combo = QtWidgets.QComboBox()
+        self.exit_action_combo.addItems(['Restart', 'Ignore', 'Exit', 'Suicide'])
+        self.exit_action_combo.setToolTip('Select the action to perform on application exit.')
+
+        self.restart_delay_input = QtWidgets.QSpinBox()
+        self.restart_delay_input.setRange(0, 3600)
+        self.restart_delay_input.setSuffix(' seconds')
+        self.restart_delay_input.setValue(0)
+
+        layout.addRow('Throttle Delay:', self.throttle_delay_input)
+        layout.addRow('Exit Action:', self.exit_action_combo)
+        layout.addRow('Restart Delay:', self.restart_delay_input)
+
+    def init_rotation_tab(self):
+        layout = QtWidgets.QFormLayout()
+        self.rotation_tab.setLayout(layout)
+
+        self.rotate_files_checkbox = QtWidgets.QCheckBox('Enable Log Rotation')
+        self.rotate_files_checkbox.setChecked(False)
+        self.rotate_files_checkbox.stateChanged.connect(self.toggle_rotation_settings)
+
+        self.rotate_online_checkbox = QtWidgets.QCheckBox('Rotate Logs Online')
+        self.rotate_online_checkbox.setChecked(False)
+
+        self.rotate_seconds_input = QtWidgets.QSpinBox()
+        self.rotate_seconds_input.setRange(0, 86400)
+        self.rotate_seconds_input.setSuffix(' seconds')
+        self.rotate_seconds_input.setValue(0)
+        self.rotate_seconds_input.setEnabled(False)
+
+        self.rotate_bytes_low_input = QtWidgets.QSpinBox()
+        self.rotate_bytes_low_input.setRange(0, 1000000)
+        self.rotate_bytes_low_input.setSuffix(' KB')
+        self.rotate_bytes_low_input.setValue(0)
+        self.rotate_bytes_low_input.setEnabled(False)
+
+        layout.addRow(self.rotate_files_checkbox)
+        layout.addRow(self.rotate_online_checkbox)
+        layout.addRow('Rotate Every:', self.rotate_seconds_input)
+        layout.addRow('Rotate When Size Exceeds:', self.rotate_bytes_low_input)
+
+    def init_hooks_tab(self):
+        layout = QtWidgets.QFormLayout()
+        self.hooks_tab.setLayout(layout)
+
+        self.hook_share_output_handles_checkbox = QtWidgets.QCheckBox('Share Output Handles with Hooks')
+        self.hook_share_output_handles_checkbox.setChecked(False)
+
+        # Hook event and action
+        self.hook_event_combo = QtWidgets.QComboBox()
+        self.hook_event_combo.addItems(['Start Pre', 'Start Post', 'Stop Pre', 'Exit Post', 'Power Change', 'Power Resume'])
+        self.hook_action_combo = QtWidgets.QComboBox()
+        self.hook_action_combo.addItems(['Execute', 'Log'])
+
+        self.hook_command_input = QtWidgets.QLineEdit()
+        browse_hook_button = QtWidgets.QPushButton('Browse')
+        browse_hook_button.clicked.connect(self.browse_hook_command)
+
+        hook_cmd_layout = QtWidgets.QHBoxLayout()
+        hook_cmd_layout.addWidget(self.hook_command_input)
+        hook_cmd_layout.addWidget(browse_hook_button)
+
+        # Add hook button
+        self.add_hook_button = QtWidgets.QPushButton('Add Hook')
+        self.add_hook_button.clicked.connect(self.add_hook)
+
+        # Hooks list
+        self.hooks_list = QtWidgets.QListWidget()
+
+        layout.addRow(self.hook_share_output_handles_checkbox)
+        layout.addRow('Hook Event:', self.hook_event_combo)
+        layout.addRow('Hook Action:', self.hook_action_combo)
+        layout.addRow('Hook Command:', hook_cmd_layout)
+        layout.addRow(self.add_hook_button)
+        layout.addRow('Existing Hooks:', self.hooks_list)
+
     def browse_executable(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, 'Select Executable')
         if path:
             self.executable_path_input.setText(path)
 
+    def browse_app_directory(self):
+        directory = QtWidgets.QFileDialog.getExistingDirectory(self, 'Select Application Directory')
+        if directory:
+            self.app_directory_input.setText(directory)
     def browse_stdout(self):
         path, _ = QtWidgets.QFileDialog.getSaveFileName(self, 'Select Output File')
         if path:
@@ -698,11 +1073,39 @@ class AddServiceDialog(QtWidgets.QDialog):
         if path:
             self.stderr_path_input.setText(path)
 
-    def browse_app_directory(self):
-        directory = QtWidgets.QFileDialog.getExistingDirectory(self, 'Select Application Directory')
-        if directory:
-            self.app_directory_input.setText(directory)
+    def browse_hook_command(self):
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, 'Select Hook Command', filter='Executable Files (*.exe *.bat *.cmd *.com);;All Files (*)')
+        if path:
+            self.hook_command_input.setText(path)
 
+    def toggle_console_delay(self, state):
+        self.console_delay_input.setEnabled(state == QtCore.Qt.Checked)
+
+    def toggle_window_delay(self, state):
+        self.window_delay_input.setEnabled(state == QtCore.Qt.Checked)
+
+    def toggle_threads_delay(self, state):
+        self.threads_delay_input.setEnabled(state == QtCore.Qt.Checked)
+
+    def toggle_rotation_settings(self, state):
+        enabled = state == QtCore.Qt.Checked
+        self.rotate_online_checkbox.setEnabled(enabled)
+        self.rotate_seconds_input.setEnabled(enabled)
+        self.rotate_bytes_low_input.setEnabled(enabled)
+
+    def add_hook(self):
+        event_action = self.hook_event_combo.currentText()
+        command = self.hook_command_input.text().strip()
+        if not command:
+            QtWidgets.QMessageBox.warning(self, 'Input Error', 'Hook command is required.')
+            return
+        if ' ' in event_action:
+            event, action = event_action.split(' ', 1)
+        else:
+            event, action = event_action, ''
+        hook_entry = f"{event} - {action}: {command}"
+        self.hooks_list.addItem(hook_entry)
+        self.hook_command_input.clear()
 
     def load_service_config(self, config: ServiceConfig):
         self.service_name_input.setText(config.service_name)
@@ -711,14 +1114,56 @@ class AddServiceDialog(QtWidgets.QDialog):
         self.arguments_input.setText(config.arguments)
         self.display_name_input.setText(config.display_name)
         self.description_input.setText(config.description)
-        self.startup_type_combo.setCurrentText(config.start)
+        index = self.startup_type_combo.findText(config.start)
+        if index != -1:
+            self.startup_type_combo.setCurrentIndex(index)
         self.object_name_input.setText(config.object_name)
         self.dependencies_input.setPlainText('\n'.join(config.dependencies))
-        self.priority_combo.setCurrentText(config.process_priority)
+        index = self.priority_combo.findText(config.process_priority)
+        if index != -1:
+            self.priority_combo.setCurrentIndex(index)
         self.stdout_path_input.setText(config.stdout_path)
         self.stderr_path_input.setText(config.stderr_path)
         env_text = '\n'.join([f'{k}={v}' for k, v in config.env_variables.items()])
         self.env_input.setPlainText(env_text)
+
+        # Shutdown configurations
+        self.method_console_checkbox.setChecked(config.kill_console_delay > 0)
+        self.console_delay_input.setValue(config.kill_console_delay)
+        self.console_delay_input.setEnabled(config.kill_console_delay > 0)
+
+        self.method_window_checkbox.setChecked(config.kill_window_delay > 0)
+        self.window_delay_input.setValue(config.kill_window_delay)
+        self.window_delay_input.setEnabled(config.kill_window_delay > 0)
+
+        self.method_threads_checkbox.setChecked(config.kill_threads_delay > 0)
+        self.threads_delay_input.setValue(config.kill_threads_delay)
+        self.threads_delay_input.setEnabled(config.kill_threads_delay > 0)
+
+        self.method_terminate_checkbox.setChecked(True)  # Assuming terminate is always enabled
+        self.kill_process_tree_checkbox.setChecked(config.kill_process_tree)
+
+        # Exit configurations
+        self.throttle_delay_input.setValue(config.throttle_delay)
+        index = self.exit_action_combo.findText(config.app_exit)
+        if index != -1:
+            self.exit_action_combo.setCurrentIndex(index)
+        self.restart_delay_input.setValue(config.restart_delay)
+
+        # Rotation configurations
+        self.rotate_files_checkbox.setChecked(config.rotate_files)
+        self.rotate_online_checkbox.setChecked(config.rotate_online)
+        self.rotate_seconds_input.setValue(config.rotate_seconds)
+        self.rotate_bytes_low_input.setValue(config.rotate_bytes_low)
+        self.rotate_online_checkbox.setEnabled(config.rotate_files)
+        self.rotate_seconds_input.setEnabled(config.rotate_files)
+        self.rotate_bytes_low_input.setEnabled(config.rotate_files)
+
+        # Hooks configurations
+        self.hook_share_output_handles_checkbox.setChecked(config.hook_share_output_handles)
+        for event, action in config.hooks.items():
+            hook_entry = f"{event} - {action}: {config.hooks[event]}"
+            self.hooks_list.addItem(hook_entry)
 
     def get_service_config(self) -> Optional[ServiceConfig]:
         config = {}
@@ -735,6 +1180,7 @@ class AddServiceDialog(QtWidgets.QDialog):
             config['dependencies'] = [dep.strip() for dep in dependencies.strip().split('\n') if dep.strip()]
         config['process_priority'] = self.priority_combo.currentText()
         config['stdout_path'] = self.stdout_path_input.text().strip()
+        config['stderr_path'] = self.stderr_path_input.text().strip()
         env_vars = self.env_input.toPlainText()
         if env_vars:
             env_dict = {}
@@ -743,6 +1189,35 @@ class AddServiceDialog(QtWidgets.QDialog):
                     key, value = line.split('=', 1)
                     env_dict[key.strip()] = value.strip()
             config['env_variables'] = env_dict
+
+        # Shutdown configurations
+        config['kill_console_delay'] = self.console_delay_input.value() if self.method_console_checkbox.isChecked() else 0
+        config['kill_window_delay'] = self.window_delay_input.value() if self.method_window_checkbox.isChecked() else 0
+        config['kill_threads_delay'] = self.threads_delay_input.value() if self.method_threads_checkbox.isChecked() else 0
+        config['kill_process_tree'] = self.kill_process_tree_checkbox.isChecked()
+
+        # Exit configurations
+        config['throttle_delay'] = self.throttle_delay_input.value()
+        config['app_exit'] = self.exit_action_combo.currentText()
+        config['restart_delay'] = self.restart_delay_input.value()
+
+        # Rotation configurations
+        config['rotate_files'] = self.rotate_files_checkbox.isChecked()
+        config['rotate_online'] = self.rotate_online_checkbox.isChecked() if config['rotate_files'] else False
+        config['rotate_seconds'] = self.rotate_seconds_input.value() if config['rotate_files'] else 0
+        config['rotate_bytes_low'] = self.rotate_bytes_low_input.value() if config['rotate_files'] else 0
+
+        # Hooks configurations
+        config['hook_share_output_handles'] = self.hook_share_output_handles_checkbox.isChecked()
+        hooks = {}
+        for index in range(self.hooks_list.count()):
+            item = self.hooks_list.item(index).text()
+            if ': ' in item:
+                event_action, command = item.split(': ', 1)
+                if ' - ' in event_action:
+                    event, action = event_action.split(' - ', 1)
+                    hooks[event] = f"{action}: {command}"
+        config['hooks'] = hooks
 
         try:
             service_config = ServiceConfig(**config)
@@ -763,11 +1238,12 @@ class AddServiceDialog(QtWidgets.QDialog):
         except ValidationError as e:
             # Display validation errors to the user
             error_messages = '\n'.join([f"{'.'.join(map(str, err['loc']))}: {err['msg']}" for err in e.errors()])
-            QtWidgets.QMessageBox.warning(self, 'Validation Error', error_messages)
+            QtWidgets.QMessageBox.warning(self, 'Validation Error', f"Failed to create service configuration:\n{error_messages}")
             return None
         except Exception as e:
             # Catch any other exceptions that might occur
             QtWidgets.QMessageBox.critical(self, 'Error', f"An unexpected error occurred: {str(e)}")
+            logging.error("Error in get_service_config", exc_info=True)
             return None
 
     def accept(self):
