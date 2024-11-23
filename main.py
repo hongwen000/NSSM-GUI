@@ -20,6 +20,63 @@ import ctypes
 logging.basicConfig(filename='nssm_gui.log', level=logging.ERROR,
                     format='%(asctime)s:%(levelname)s:%(message)s')
 
+import subprocess
+import json
+from typing import List, Dict
+
+def get_nssm_services() -> List[Dict[str, str]]:
+    """
+    使用 PowerShell 命令获取所有由 NSSM 管理的服务。
+
+    Returns:
+        List[Dict[str, str]]: 包含服务名称和状态的字典列表。
+
+    Raises:
+        subprocess.CalledProcessError: 如果 PowerShell 命令执行失败。
+        json.JSONDecodeError: 如果 PowerShell 输出的 JSON 无法解析。
+    """
+    power_shell_cmd = [
+        'powershell',
+        '-NoProfile',
+        '-Command',
+        "Get-CimInstance -ClassName Win32_Service | Where-Object { $_.PathName -and ($_.PathName.Contains('nssm')) } | Select-Object -Property Name, State | ConvertTo-Json"
+    ]
+
+    try:
+        result = subprocess.run(
+            power_shell_cmd,
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        output = result.stdout.strip()
+
+        if not output:
+            return []
+
+        services = json.loads(output)
+
+        if isinstance(services, dict):
+            services = [services]
+
+        return services
+
+    except subprocess.CalledProcessError as e:
+        error_msg = e.stderr.strip() if e.stderr else "Unknown Error"
+        raise subprocess.CalledProcessError(
+            returncode=e.returncode,
+            cmd=e.cmd,
+            output=e.stdout,
+            stderr=error_msg
+        ) from None
+    except json.JSONDecodeError as e:
+        raise json.JSONDecodeError(
+            f"JSON parse error: {str(e)}",
+            e.doc,
+            e.pos
+        ) from None
+
+
 
 class ServiceConfig(BaseModel):
     service_name: Optional[str] = Field('', min_length=1, max_length=256)
@@ -71,8 +128,8 @@ class ServiceConfig(BaseModel):
     def validate_application_path(cls, v):
         if not v:
             return v  # Allow empty string for default constructor
-        if not os.path.isfile(v):
-            raise ValueError(f"Application path '{v}' does not exist or is not a file.")
+        # if not os.path.isfile(v):
+        #     raise ValueError(f"Application path '{v}' does not exist or is not a file.")
 
         return v
 
@@ -254,7 +311,6 @@ def run_as_admin():
                                        f"Failed to elevate privileges:\n{str(e)}")
         return False
 
-
 class NSSMGUI(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
@@ -275,7 +331,7 @@ class NSSMGUI(QtWidgets.QMainWindow):
         # Service Table
         self.service_table = QtWidgets.QTableWidget()
         self.service_table.setColumnCount(2)
-        self.service_table.setHorizontalHeaderLabels(['Service Name', 'Status'])
+        self.service_table.setHorizontalHeaderLabels(['Service Name', 'State'])
         self.service_table.horizontalHeader().setStretchLastSection(True)
         self.service_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.service_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
@@ -334,29 +390,33 @@ class NSSMGUI(QtWidgets.QMainWindow):
 
 
     def load_services(self):
-        # Clear existing rows
+        """
+        加载由 NSSM 管理的服务，并填充到服务表格中。
+        """
+        # 清空现有行
         self.service_table.setRowCount(0)
-        # Get the system encoding
+
         try:
-            # Get list of services using NSSM naming convention
-            # Use the system's preferred encoding
-            sys_encoding = locale.getpreferredencoding()
-            output = subprocess.check_output(['sc', 'query', 'type=', 'service', 'state=', 'all'], text=True, encoding=sys_encoding)
-            service_names = []
-            for line in output.split('\n'):
-                if 'SERVICE_NAME:' in line:
-                    name = line.strip().split(':')[1].strip()
-                    if self.is_nssm_service(name):
-                        service_names.append(name)
-            # Populate the table
-            for service in service_names:
+            # 调用独立的函数获取服务列表
+            services = get_nssm_services()
+
+            # 填充表格
+            for service in services:
+                name = service.get('Name', 'Unknown')
+                state = service.get('State', 'Unknown')
+
                 row_position = self.service_table.rowCount()
                 self.service_table.insertRow(row_position)
-                self.service_table.setItem(row_position, 0, QtWidgets.QTableWidgetItem(service))
-                status = self.get_service_status(service)
-                self.service_table.setItem(row_position, 1, QtWidgets.QTableWidgetItem(status))
+                self.service_table.setItem(row_position, 0, QtWidgets.QTableWidgetItem(name))
+                self.service_table.setItem(row_position, 1, QtWidgets.QTableWidgetItem(state))
+
         except subprocess.CalledProcessError as e:
             QtWidgets.QMessageBox.critical(self, 'Error', f"Failed to load services:\n{e.stderr}")
+        except json.JSONDecodeError as e:
+            QtWidgets.QMessageBox.critical(self, 'Error', f"Failed to parse PowerShell output:\n{str(e)}")
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, 'Error', f"An unexpected error occurred:\n{str(e)}")
+
 
     def is_nssm_service(self, service_name):
         # Implement a method to check if a service is managed by NSSM
@@ -550,6 +610,7 @@ class NSSMGUI(QtWidgets.QMainWindow):
         """
         # Mapping fields to NSSM parameters
         field_mapping = {
+            'application_path': ['set', service_name, 'Application', value],
             'arguments': ['set', service_name, 'AppParameters', value],
             'app_directory': ['set', service_name, 'AppDirectory', value],
             'app_exit': ['set', service_name, 'AppExit', 'Default', value],
@@ -609,6 +670,7 @@ class NSSMGUI(QtWidgets.QMainWindow):
                                                    QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
                                                    QtWidgets.QMessageBox.No)
             if reply == QtWidgets.QMessageBox.Yes:
+                output = self.run_nssm_command(['stop', service_name])
                 output = self.run_nssm_command(['remove', service_name, 'confirm'])
                 if output:
                     QtWidgets.QMessageBox.information(self, 'Success', f"Service '{service_name}' has been deleted successfully.")
