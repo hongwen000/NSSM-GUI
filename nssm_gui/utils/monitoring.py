@@ -193,26 +193,31 @@ class ServiceMonitor:
         Returns:
             Dictionary of service monitoring data
         """
+        # Ensure the service exists in service_data
         if service_name not in self.service_data:
             self.reset_service_data(service_name)
-            
+
         data = self.service_data[service_name]
         
-        # Calculate averages
-        cpu_avg = sum(data['cpu_percent']) / max(len(data['cpu_percent']), 1)
-        mem_avg = sum(data['memory_percent']) / max(len(data['memory_percent']), 1)
-        mem_mb_avg = sum(data['memory_mb']) / max(len(data['memory_mb']), 1)
+        # Calculate averages, using sensible defaults for empty lists
+        cpu_history = data['cpu_percent']
+        mem_history = data['memory_percent']
+        mem_mb_history = data['memory_mb']
         
-        # Calculate current values (or most recent)
-        cpu_current = data['cpu_percent'][-1] if data['cpu_percent'] else 0
-        mem_current = data['memory_percent'][-1] if data['memory_percent'] else 0
-        mem_mb_current = data['memory_mb'][-1] if data['memory_mb'] else 0
+        cpu_avg = sum(cpu_history) / len(cpu_history) if cpu_history else 0
+        mem_avg = sum(mem_history) / len(mem_history) if mem_history else 0
+        mem_mb_avg = sum(mem_mb_history) / len(mem_mb_history) if mem_mb_history else 0
+        
+        # Calculate current values (or 0 if no data)
+        cpu_current = cpu_history[-1] if cpu_history else 0
+        mem_current = mem_history[-1] if mem_history else 0
+        mem_mb_current = mem_mb_history[-1] if mem_mb_history else 0
         
         # Return formatted stats
         return {
-            'cpu_history': data['cpu_percent'],
-            'memory_history': data['memory_percent'],
-            'memory_mb_history': data['memory_mb'],
+            'cpu_history': cpu_history,
+            'memory_history': mem_history,
+            'memory_mb_history': mem_mb_history,
             'io_read_history': data['io_read_mb'],
             'io_write_history': data['io_write_mb'],
             'timestamps': data['timestamps'],

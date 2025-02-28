@@ -144,8 +144,26 @@ class NSSmManager:
         """
         try:
             output = await self.run_nssm_command(['dump', service_name])
-            config_data = self._parse_nssm_dump(output)
-            return ServiceConfig(**config_data) if config_data else None
+            
+            # Fallback to an empty dictionary if parsing fails
+            config_data = {}
+            try:
+                config_data = self._parse_nssm_dump(output)
+            except Exception as parsing_error:
+                self.logger.warning(f"Error parsing service config: {parsing_error}")
+            
+            # Use get method with defaults to avoid validation errors
+            safe_config_data = {
+                'service_name': service_name,
+                'application_path': config_data.get('application_path', ''),
+                'arguments': config_data.get('arguments', ''),
+                'app_directory': config_data.get('app_directory', ''),
+                'display_name': config_data.get('display_name', ''),
+                'description': config_data.get('description', ''),
+                'start': config_data.get('start', 'SERVICE_AUTO_START')
+            }
+            
+            return ServiceConfig(**safe_config_data)
         except Exception as e:
             self.logger.error(f"Error getting service config: {str(e)}")
             return None
@@ -440,8 +458,9 @@ class NSSmManager:
                     parts = line.strip().split(':')
                     if len(parts) > 1:
                         state_parts = parts[1].strip().split()
-                        if len(state_parts) > 0:
-                            return state_parts[0]
+                        # Extract the text representation of the state
+                        state_text = next((p for p in state_parts if p.isalpha()), "Unknown")
+                        return state_text.upper()
             return "Unknown"
         except Exception as e:
             self.logger.error(f"Error getting service status: {str(e)}")

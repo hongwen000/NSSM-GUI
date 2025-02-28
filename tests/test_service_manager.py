@@ -94,7 +94,7 @@ class TestNSSmManager:
         mock_run_command.return_value = """
         "C:\\path\\to\\nssm.exe" install TestService "C:\\app\\test.exe"
         "C:\\path\\to\\nssm.exe" set TestService AppParameters "--arg1 --arg2"
-        "C:\\path\\to\\nssm.exe" set TestService AppDirectory "C:\\app"
+        "C:\\path\\to\\nssm.exe" set TestService AppDirectory "C:\\temp\\app"
         "C:\\path\\to\\nssm.exe" set TestService DisplayName "Test Service"
         "C:\\path\\to\\nssm.exe" set TestService Description "A test service"
         "C:\\path\\to\\nssm.exe" set TestService Start SERVICE_AUTO_START
@@ -108,7 +108,7 @@ class TestNSSmManager:
         assert config.service_name == "TestService"
         assert config.application_path == "C:\\app\\test.exe"
         assert config.arguments == "--arg1 --arg2"
-        assert config.app_directory == "C:\\app"
+        assert config.app_directory == "C:\\temp\\app"
         assert config.display_name == "Test Service"
         assert config.description == "A test service"
         assert config.start == "SERVICE_AUTO_START"

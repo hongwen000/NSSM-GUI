@@ -158,9 +158,15 @@ class ConfigManager:
         Get UI preferences.
         
         Returns:
-            Dictionary of UI preferences
+            Dictionary of UI preferences with defaults for missing values
         """
-        return self.config.get('ui', self.DEFAULT_CONFIG['ui'].copy())
+        # Start with a copy of the default UI preferences
+        prefs = self.DEFAULT_CONFIG['ui'].copy()
+        
+        # Update with user-configured preferences (if any)
+        prefs.update(self.config.get('ui', {}))
+        
+        return prefs
         
     def set_ui_preferences(self, preferences: Dict[str, Any]) -> bool:
         """

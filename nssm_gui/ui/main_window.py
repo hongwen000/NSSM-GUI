@@ -38,7 +38,7 @@ class ServiceTableModel(QtCore.QAbstractTableModel):
             elif col == 2:
                 return service.state
             elif col == 3:
-                return str(service.pid) if service.pid else ""
+                return str(service.pid) if service.pid is not None else ""
                 
         elif role == QtCore.Qt.BackgroundRole:
             service = self.services[index.row()]

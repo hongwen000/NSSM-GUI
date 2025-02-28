@@ -121,26 +121,27 @@ class TestGetEventLoop:
     
     def test_get_event_loop(self):
         """Test getting the event loop."""
-        with patch('asyncio.new_event_loop') as mock_new_loop:
-            with patch('asyncio.set_event_loop') as mock_set_loop:
-                # Create a mock loop
-                mock_loop = MagicMock()
-                mock_new_loop.return_value = mock_loop
-                
-                # First call should create a new loop
-                loop1 = get_event_loop()
-                assert loop1 is mock_loop
-                mock_new_loop.assert_called_once()
-                mock_set_loop.assert_called_once_with(mock_loop)
-                
-                # Reset mocks
-                mock_new_loop.reset_mock()
-                mock_set_loop.reset_mock()
-                
-                # Mock the global _loop variable
-                with patch('nssm_gui.utils.asyncqt._loop', mock_loop):
-                    # Second call should return the same loop
-                    loop2 = get_event_loop()
-                    assert loop2 is mock_loop
-                    mock_new_loop.assert_not_called()
-                    mock_set_loop.assert_not_called()
+        with patch('nssm_gui.utils.asyncqt._loop', None):
+            with patch('asyncio.new_event_loop') as mock_new_loop:
+                with patch('asyncio.set_event_loop') as mock_set_loop:
+                    # Create a mock loop
+                    mock_loop = MagicMock()
+                    mock_new_loop.return_value = mock_loop
+                    
+                    # First call should create a new loop
+                    loop1 = get_event_loop()
+                    assert loop1 is mock_loop
+                    mock_new_loop.assert_called_once()
+                    mock_set_loop.assert_called_once_with(mock_loop)
+                    
+                    # Reset mocks
+                    mock_new_loop.reset_mock()
+                    mock_set_loop.reset_mock()
+                    
+                    # Mock the global _loop variable
+                    with patch('nssm_gui.utils.asyncqt._loop', mock_loop):
+                        # Second call should return the same loop
+                        loop2 = get_event_loop()
+                        assert loop2 is mock_loop
+                        mock_new_loop.assert_not_called()
+                        mock_set_loop.assert_not_called()

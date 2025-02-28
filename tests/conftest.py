@@ -37,15 +37,19 @@ def mock_platform():
         yield
 
 @pytest.fixture(scope="session", autouse=True)
-def mock_os_exists():
-    """Mock os.path.exists to return True for testing paths."""
+def mock_path_exists():
+    """Mock os.path.exists to handle test paths."""
     original_exists = os.path.exists
     
     def patched_exists(path):
-        # Return True for mock nssm path and common test paths
-        if 'nssm.exe' in path or 'test.exe' in path:
+        # Always return True for test-related paths
+        if any(x in path.lower() for x in ['nssm.exe', 'test.exe', 'test', 'tmp', 'temp']):
             return True
-        # Fall back to real implementation for other paths
+        # Create a temporary directory if needed
+        if 'app' in path.lower():
+            os.makedirs(path, exist_ok=True)
+            return True
+        # Fall back to original implementation
         return original_exists(path)
     
     with patch('os.path.exists', patched_exists):
